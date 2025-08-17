@@ -1,0 +1,118 @@
+#############################################################
+# Script: GSE15573_RA_DEG_analysis.R
+# Description: Differential expression analysis of GEO dataset 
+# GSE15573 (Rheumatoid Arthritis vs Control) using limma
+# Author: Ras Preeti Sharma
+# Date: 17th August 2025
+#############################################################
+
+# ---- Load Required Libraries ---- 
+library(GEOquery)     # to download GEO datasets
+library(dplyr)        # data manipulation
+library(pheatmap)     # heatmaps
+library(ggplot2)      # plotting
+library(ggrepel)      # better label placement in plots
+library(limma)        # differential expression analysis
+
+# ---- Download GEO Dataset ----
+id_my <- "GSE15573"
+gse <- getGEO(id_my, GSEMatrix = TRUE)
+length(gse)           # check how many expression sets are available
+gse <- gse[[1]]       # select the first expression set
+
+# ---- Extract and Normalize Expression Data ----
+exprs_data <- exprs(gse)
+exprs_normalized <- normalizeBetweenArrays(exprs_data)
+
+# ---- Boxplot of Normalized Data ----
+boxplot(exprs_normalized, outline = FALSE, 
+        main = "Normalized Expression Data GSE15573")
+
+# ---- Sample Information ----
+sampleInfoRA <- pData(gse)
+colnames(pData(gse))  # check available metadata columns
+
+#  Adjust column name for group assignment
+sampleInfoRA <- sampleInfoRA %>%
+  rename(Patient_Sample = title, Group = characteristics_ch1)
+
+# ---- Correlation Heatmap ----
+corMatrixRA <- cor(exprs_normalized, use = "c")
+corMatrixRA[is.na(corMatrixRA)] <- 0
+rownames(sampleInfoRA) <- colnames(corMatrixRA)
+pheatmap(corMatrixRA, annotation_col = sampleInfoRA)
+
+# ---- PCA Analysis ----
+exprs_clean <- na.omit(exprs_normalized[!apply(exprs_normalized, 1, 
+                                               function(x) any(is.infinite(x))), ])
+pcaRA <- prcomp(t(exprs_clean))
+
+# PCA plot
+cbind(sampleInfoRA, pcaRA$x) %>%
+  ggplot(aes(x = PC1, y = PC2, col = Group, label = Patient_Sample)) +
+  geom_point(aes(shape = Group), size = 3) +
+  geom_text_repel(max.overlaps = 50) +
+  scale_color_manual(values = c("Rheumatoid Arthritis Patient" = "blue",
+                                "Control" = "red")) +
+  scale_shape_manual(values = c("Rheumatoid Arthritis Patient" = 17,
+                                "Control" = 16)) +
+  ggtitle("PCA of Samples")
+
+# ---- Differential Expression Analysis ----
+# Create design matrix
+designRA <- model.matrix(~0 + sampleInfoRA$Group)
+colnames(designRA) <- c("RA", "Control")
+
+# Fit linear model and apply contrasts
+fitRA <- lmFit(exprs_normalized, designRA)
+contrastsRA <- makeContrasts(RA - Control, levels = designRA)
+fit2RA <- contrasts.fit(fitRA, contrastsRA)
+fit2RA <- eBayes(fit2RA)
+
+# ---- Annotate Results ----
+colnames(fData(gse))   # check available annotation fields
+annoRA <- select(fData(gse), "ID", "Symbol")
+fit2RA$genes <- annoRA
+
+# Extract full results
+full_results_RA <- topTable(fit2RA, number = Inf)
+full_results_RA <- tibble::rownames_to_column(full_results_RA, var = "probe_id")
+
+# ---- Volcano Plot ----
+p_cutoff <- 0.05
+fc_cutoff <- 1
+
+sig_genes_RA <- full_results_RA %>%
+  mutate(SignificantRA = P.Value < p_cutoff & abs(logFC) > fc_cutoff,
+         Direction = case_when(
+           logFC > fc_cutoff ~ "Up",
+           logFC < -fc_cutoff ~ "Down",
+           TRUE ~ "Not_significant"
+         ))
+
+volcano_plot_RA <- ggplot(sig_genes_RA, aes(x = logFC, y = -log10(P.Value), color = Direction)) +
+  geom_point(alpha = 0.8, size = 1.2, shape = 16) +
+  scale_color_manual(values = c("Up" = "red", "Down" = "blue", "Not_significant" = "black"),
+                     guide = guide_legend(override.aes = list(shape = 16, size = 5))) +
+  xlab("log2(Fold Change)") +
+  ylab("-log10(P.Value)") +
+  ggtitle("Volcano Plot: RA vs Control") +
+  theme_bw() +
+  geom_hline(yintercept = -log10(p_cutoff), linetype = "dashed", color = "black") +
+  geom_vline(xintercept = c(-fc_cutoff, fc_cutoff), linetype = "dashed", color = "black")
+print(volcano_plot_RA)
+
+# ---- Export DEGs ----
+DEGs_up_RA <- sig_genes_RA %>%
+  filter(logFC >= fc_cutoff & P.Value < p_cutoff)
+DEGs_down_RA <- sig_genes_RA %>%
+  filter(logFC <= -fc_cutoff & P.Value < p_cutoff)
+
+# ---- Put the path/folder location where you want to save your csv file ----
+write.csv(DEGs_up_RA, file = "D:\\R_scripts\\RA_GSE15573\\DEGs_up_RA.csv", row.names = FALSE)
+write.csv(DEGs_down_RA, file = "D:\\R_scripts\\RA_GSE15573\\DEGs_down_RA.csv", row.names = FALSE)
+
+
+#############################################################
+# End of Script
+#############################################################
